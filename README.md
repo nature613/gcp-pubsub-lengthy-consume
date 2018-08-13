@@ -14,9 +14,7 @@ The code also requires the `GCP_PROJECT_ID` environment variable for your GCP pr
 $ go build -v
 $ export GCP_PROJECT_ID=myprojectid
 $ ./gcp-pubsub-lengthy-consume
-
 # or
-
 $ go build -v
 $ GCP_PROJECT_ID=myprojectid ./gcp-pubsub-lengthy-consume
 ```
