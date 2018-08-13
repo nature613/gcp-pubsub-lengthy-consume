@@ -238,6 +238,7 @@ func main() {
 			Data: []byte("60"),
 		})
 
+		// Wait for a little bit...
 		time.Sleep(time.Second * 100)
 		done <- nil
 	}()
