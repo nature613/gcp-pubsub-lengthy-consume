@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	gpubsub "cloud.google.com/go/pubsub"
@@ -13,7 +14,7 @@ import (
 	pubsubpb "google.golang.org/genproto/googleapis/pubsub/v1"
 )
 
-func StartLengthy(projectId string) error {
+func startLengthy(projectId, sub string) error {
 	ctx := context.TODO()
 	client, err := pubsubv1.NewSubscriberClient(ctx)
 	if err != nil {
@@ -22,7 +23,7 @@ func StartLengthy(projectId string) error {
 
 	defer client.Close()
 
-	subname := fmt.Sprintf("projects/%v/subscriptions/testsubscription", projectId)
+	subname := fmt.Sprintf("projects/%v/subscriptions/%v", projectId, sub)
 
 	req := pubsubpb.PullRequest{
 		Subscription: subname,
@@ -54,7 +55,7 @@ func StartLengthy(projectId string) error {
 
 			var finishc = make(chan error)
 			var delay = 0 * time.Second // tick immediately upon reception
-			var ackDeadline = time.Second * 60
+			var ackDeadline = time.Second * 20
 
 			// Continuously notify the server that processing is still happening on this batch.
 			go func() {
@@ -109,6 +110,13 @@ func StartLengthy(projectId string) error {
 
 					log.Printf("payload=%v, ids=%v", string(rm.Message.Data), ids)
 
+					// In this example, the message we are receiving is the number of
+					// seconds we will "do the work".
+					delta, err := strconv.Atoi(string(rm.Message.Data))
+					if err == nil {
+						time.Sleep(time.Second * time.Duration(delta))
+					}
+
 					log.Printf("pubsub processing took %v", time.Since(starttime))
 
 					err = client.Acknowledge(ctx, &pubsubpb.AcknowledgeRequest{
@@ -153,17 +161,87 @@ func getTopic(project, id string) (*gpubsub.Topic, error) {
 
 	return topic, nil
 }
-func main() {
+
+// getSubscription retrieves a PubSub subscription. It creates the subscription if it doesn't exist, using the
+// provided topic object. The default Ack deadline, if not provided, is 20s.
+func getSubscription(project, id string, topic *gpubsub.Topic, ackdeadline ...time.Duration) (*gpubsub.Subscription, error) {
 	ctx := context.Background()
+	client, err := gpubsub.NewClient(ctx, project)
+	if err != nil {
+		return nil, errors.Wrap(err, "pubsub client failed")
+	}
+
+	sub := client.Subscription(id)
+	exists, err := sub.Exists(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "pubsub subscription exists check failed")
+	}
+
+	if !exists {
+		deadline := time.Second * 20
+		if len(ackdeadline) > 0 {
+			deadline = ackdeadline[0]
+		}
+
+		return client.CreateSubscription(ctx, id, gpubsub.SubscriptionConfig{
+			Topic:       topic,
+			AckDeadline: deadline,
+		})
+	}
+
+	return sub, nil
+}
+
+func main() {
+	// Authentication check.
+	creds := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	if creds == "" {
+		panic("setup your GOOGLE_APPLICATION_CREDENTIALS env var for auth")
+	}
+
+	// Project ID for GCP.
 	projectId := os.Getenv("GCP_PROJECT_ID")
 	if projectId == "" {
-		panic("project id cannot be empty")
+		panic("set GCP_PROJECT_ID env var to your GCP project id")
 	}
 
-	t, err := getTopic(projectId, "testtopic")
+	topicName := "lengthytesttopic"
+	subscription := "lengthytestsubscription"
+
+	t, err := getTopic(projectId, topicName)
 	if err != nil {
-		log.Fatalf(err)
+		log.Fatal(err)
 	}
 
-	log.Println(projectId)
+	// This is only to create our subscription. We're not gonna use the return value.
+	_, err = getSubscription(projectId, subscription, t)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Start the subscriber routine.
+	go startLengthy(projectId, subscription)
+
+	_ = t
+
+	done := make(chan error)
+
+	// Send a couple of messages to the topic to simulate work for our consumer.
+	go func() {
+		ctx := context.Background()
+		log.Printf("sending 30s amount of work...")
+		t.Publish(ctx, &gpubsub.Message{
+			Data: []byte("30"),
+		})
+
+		log.Printf("sending 1min amount of work...")
+		t.Publish(ctx, &gpubsub.Message{
+			Data: []byte("60"),
+		})
+
+		time.Sleep(time.Second * 100)
+		done <- nil
+	}()
+
+	<-done
 }
