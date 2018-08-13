@@ -223,8 +223,6 @@ func main() {
 	// Start the subscriber routine.
 	go startLengthy(projectId, subscription)
 
-	_ = t
-
 	done := make(chan error)
 
 	// Send a couple of messages to the topic to simulate work for our consumer.
