@@ -208,6 +208,7 @@ func main() {
 	topicName := "lengthytesttopic"
 	subscription := "lengthytestsubscription"
 
+	// This will create the topic if not exists.
 	t, err := getTopic(projectId, topicName)
 	if err != nil {
 		log.Fatal(err)
