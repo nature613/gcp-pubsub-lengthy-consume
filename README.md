@@ -6,7 +6,7 @@ The code will create the topic `lengthytesttopic` and a subscription `lengthytes
 
 ## Requirements
 
-Information on authenticating the pubsub SDK can be found [here](https://cloud.google.com/pubsub/docs/reference/libraries).
+Information on authenticating the pubsub SDK can be found [here](https://cloud.google.com/pubsub/docs/reference/libraries). You can check this [blog post](https://flowerinthenight.com/blog/2018/06/09/google-api-client-go-auth) as well.
 
 The code also requires the `GCP_PROJECT_ID` environment variable for your GCP project ID. You can run the sample like:
 
