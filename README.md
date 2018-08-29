@@ -11,7 +11,7 @@ Information on authenticating the pubsub SDK can be found [here](https://cloud.g
 The code also requires the `GCP_PROJECT_ID` environment variable for your GCP project ID. You can run the sample like:
 
 ```bash
-# using version 1.11
+# tested using version 1.11, built outside of $GOPATH
 $ go build -v -mod=vendor
 $ export GCP_PROJECT_ID=myprojectid
 $ ./gcp-pubsub-lengthy-consume

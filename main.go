@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	gpubsub "cloud.google.com/go/pubsub"
@@ -33,7 +34,7 @@ func startLengthy(projectId, sub string) error {
 	log.Printf("start subscription listen on %v", subname)
 
 	for {
-		pr, err := client.Pull(ctx, &req)
+		res, err := client.Pull(ctx, &req)
 		if err != nil {
 			log.Printf("client pull failed, err=%v", err)
 			continue
@@ -41,103 +42,82 @@ func startLengthy(projectId, sub string) error {
 
 		// Pull() returns an empty list if there are no messages available in the
 		// backlog. We should skip processing steps when that happens.
-		if len(pr.ReceivedMessages) == 0 {
+		if len(res.ReceivedMessages) == 0 {
 			continue
 		}
 
-		// Put everything in a giant goroutine so we can continue processing other messages.
-		go func(res *pubsubpb.PullResponse) {
-			var ids []string
+		var ids []string
 
-			for _, m := range res.ReceivedMessages {
-				ids = append(ids, m.AckId)
-			}
+		for _, m := range res.ReceivedMessages {
+			ids = append(ids, m.AckId)
+		}
 
-			var finishc = make(chan error)
-			var delay = 0 * time.Second // tick immediately upon reception
-			var ackDeadline = time.Second * 20
+		var finishc = make(chan error)
+		var delay = 0 * time.Second // tick immediately upon reception
+		var ackDeadline = time.Second * 20
 
-			// Continuously notify the server that processing is still happening on this batch.
-			go func() {
-				defer log.Printf("ack extender done for %v", ids)
+		// Continuously notify the server that processing is still happening on this batch.
+		go func() {
+			defer log.Printf("ack extender done for %v", ids)
 
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-finishc:
-						return
-					case <-time.After(delay):
-						log.Printf("modify ack deadline for %vs, ids=%v", ackDeadline.Seconds(), ids)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-finishc:
+					return
+				case <-time.After(delay):
+					log.Printf("modify ack deadline for %vs, ids=%v", ackDeadline.Seconds(), ids)
 
-						err := client.ModifyAckDeadline(ctx, &pubsubpb.ModifyAckDeadlineRequest{
-							Subscription:       subname,
-							AckIds:             ids,
-							AckDeadlineSeconds: int32(ackDeadline.Seconds()),
-						})
-
-						if err != nil {
-							log.Printf("failed in ack deadline extend, err=%v", err)
-						}
-
-						delay = ackDeadline - 10*time.Second // 10 seconds grace period
-					}
-				}
-			}()
-
-			eachmsgc := make(chan error)
-			doneallc := make(chan error)
-
-			// Wait for all messages in this batch (of 1 message, actually) to finish.
-			if len(res.ReceivedMessages) > 0 {
-				go func(n int) {
-					count := 0
-					for {
-						<-eachmsgc
-						count += 1
-						if count >= n {
-							doneallc <- nil
-							return
-						}
-					}
-				}(len(res.ReceivedMessages))
-			}
-
-			// Process each message concurrently.
-			for _, msg := range res.ReceivedMessages {
-				go func(rm *pubsubpb.ReceivedMessage) {
-					starttime := time.Now()
-
-					log.Printf("payload=%v, ids=%v", string(rm.Message.Data), ids)
-
-					// In this example, the message we are receiving is the number of
-					// seconds we will "do the work".
-					delta, err := strconv.Atoi(string(rm.Message.Data))
-					if err == nil {
-						time.Sleep(time.Second * time.Duration(delta))
-					}
-
-					log.Printf("pubsub processing took %v", time.Since(starttime))
-
-					err = client.Acknowledge(ctx, &pubsubpb.AcknowledgeRequest{
-						Subscription: subname,
-						AckIds:       []string{rm.AckId},
+					err := client.ModifyAckDeadline(ctx, &pubsubpb.ModifyAckDeadlineRequest{
+						Subscription:       subname,
+						AckIds:             ids,
+						AckDeadlineSeconds: int32(ackDeadline.Seconds()),
 					})
 
 					if err != nil {
-						log.Printf("ack failed, err=%v", err)
+						log.Printf("failed in ack deadline extend, err=%v", err)
 					}
 
-					eachmsgc <- err
-				}(msg)
+					delay = ackDeadline - 10*time.Second // 10 seconds grace period
+				}
 			}
+		}()
 
-			// Wait for all messages (just 1 actually) to finish.
-			<-doneallc
+		var wg sync.WaitGroup
 
-			// This will terminate our ack extender goroutine.
-			close(finishc)
-		}(pr)
+		wg.Add(len(res.ReceivedMessages))
+
+		// Process each message concurrently.
+		for _, msg := range res.ReceivedMessages {
+			go func(rm *pubsubpb.ReceivedMessage) {
+				defer wg.Done()
+				starttime := time.Now()
+
+				log.Printf("payload=%v, ids=%v", string(rm.Message.Data), ids)
+
+				// In this example, the message we are receiving is the number of
+				// seconds we will "do the work".
+				delta, err := strconv.Atoi(string(rm.Message.Data))
+				if err == nil {
+					time.Sleep(time.Second * time.Duration(delta))
+				}
+
+				log.Printf("pubsub processing took %v", time.Since(starttime))
+
+				err = client.Acknowledge(ctx, &pubsubpb.AcknowledgeRequest{
+					Subscription: subname,
+					AckIds:       []string{rm.AckId},
+				})
+
+				if err != nil {
+					log.Printf("ack failed, err=%v", err)
+				}
+			}(msg)
+		}
+
+		wg.Wait()      // wait for all message processing to be done
+		close(finishc) // terminate our ack extender goroutine
 	}
 }
 
